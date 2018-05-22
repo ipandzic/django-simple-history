@@ -21,6 +21,8 @@ from django.utils.translation import ugettext_lazy as _
 from . import exceptions
 from .manager import HistoryDescriptor
 
+import simple_history
+
 registered_models = {}
 
 
@@ -30,7 +32,7 @@ class HistoricalRecords(object):
     def __init__(self, verbose_name=None, bases=(models.Model,),
                  user_related_name='+', table_name=None, inherit=False,
                  history_id_field=None,
-                 excluded_fields=None):
+                 excluded_fields=None, manual_trigger=False, follow=None):
         self.user_set_verbose_name = verbose_name
         self.user_related_name = user_related_name
         self.table_name = table_name
@@ -39,6 +41,10 @@ class HistoricalRecords(object):
         if excluded_fields is None:
             excluded_fields = []
         self.excluded_fields = excluded_fields
+
+        self.follow = follow or []
+        self.manual_trigger = manual_trigger
+
         try:
             if isinstance(bases, six.string_types):
                 raise TypeError
@@ -98,14 +104,22 @@ class HistoricalRecords(object):
 
         # The HistoricalRecords object will be discarded,
         # so the signal handlers can't use weak references.
-        models.signals.post_save.connect(self.post_save, sender=sender,
-                                         weak=False)
-        models.signals.post_delete.connect(self.post_delete, sender=sender,
-                                           weak=False)
+
+        if not self.manual_trigger:
+            models.signals.post_save.connect(self.post_save, sender=sender,
+                                             weak=False)
+            models.signals.post_delete.connect(self.post_delete, sender=sender,
+                                               weak=False)
 
         descriptor = HistoryDescriptor(history_model)
         setattr(sender, self.manager_name, descriptor)
         sender._meta.simple_history_manager_attribute = self.manager_name
+
+        setattr(sender,
+                'manual_create_historical_record',
+                self.manual_create_historical_record)
+        self.make_through_tables_of_followed_m2m_historical(sender,
+                                                            self.manager_name)
 
     def create_history_model(self, model, inherited):
         """
@@ -325,6 +339,66 @@ class HistoricalRecords(object):
                 return None
             except AttributeError:
                 return None
+
+    def make_through_tables_of_followed_m2m_historical(self, cls, name):
+        """
+        Add HistoricalRecords to through tables of followed ManyToManyFields.
+        """
+        for attr_name in self.follow:
+            try:
+                field = getattr(cls, attr_name).field
+            except AttributeError:
+                # attr_name is a related_name, that follows backwards
+                # a ForeignKey pointing to cls, not yet added to cls.
+                continue
+
+            if not isinstance(field, models.ManyToManyField):
+                continue
+
+            model = field.rel.through
+            attrs = model.__dict__.values()
+            historical = any([isinstance(a, HistoricalRecords) for a in attrs])
+
+            if hasattr(model, name) or historical:
+                continue
+
+            setattr(model, name, HistoricalRecords(manual_trigger=True))
+            simple_history.register(model, app=self.module.split('.')[0])
+
+    def manual_create_historical_record(
+            self, instance, history_type, follow=True):
+        """
+        Create historical record of instance and all related instances
+        specified in follow.
+        All resulting records have same history_date.
+        """
+        instance._history_date = getattr(instance, '_history_date', now())
+        self.create_historical_record(instance, history_type)
+
+        if not follow:
+            return
+
+        for attr_name in self.follow:
+            attr = getattr(instance, attr_name)
+            follow_instances = []
+
+            if isinstance(attr, models.Manager):
+                try:
+                    # ManyRelatedManager
+                    manager = attr.through._default_manager
+                except AttributeError:
+                    manager = attr  # RelatedManger
+
+                follow_instances = manager.all()
+
+            elif isinstance(attr, models.Model):
+                follow_instances = [attr]
+
+            for follow_instance in follow_instances:
+                follow_instance._history_date = instance._history_date
+                follow_instance.manual_create_historical_record(
+                    follow_instance, history_type
+                )
 
 
 def transform_field(field):
