@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 
-from django.conf import settings
 from django.contrib.admin import AdminSite
 from django.contrib.admin.utils import quote
 from django.contrib.auth import get_user_model
@@ -14,11 +13,15 @@ from mock import ANY, patch
 
 from simple_history.admin import SimpleHistoryAdmin
 from simple_history.models import HistoricalRecords
+from simple_history.tests.tests.utils import middleware_override_settings
 from ..models import (
     Book,
+    BucketData,
+    BucketMember,
     Choice,
     ConcreteExternal,
     Employee,
+    FileModel,
     Person,
     Poll,
     State
@@ -42,12 +45,6 @@ def get_history_url(obj, history_index=None, site="admin"):
     else:
         return reverse("{site}:{app}_{model}_history".format(
             site=site, app=app, model=model), args=[quote(obj.pk)])
-
-
-overridden_settings = {
-    'MIDDLEWARE': (settings.MIDDLEWARE +
-                   ['simple_history.middleware.HistoryRequestMiddleware']),
-}
 
 
 class AdminSiteTest(WebTest):
@@ -102,6 +99,25 @@ class AdminSiteTest(WebTest):
         self.assertIn("votes", response.unicode_normal_body)
         self.assertIn("12", response.unicode_normal_body)
         self.assertIn("15", response.unicode_normal_body)
+
+    def test_history_list_custom_admin_methods(self):
+        model_name = self.user._meta.model_name
+        self.assertEqual(model_name, 'customuser')
+        self.login()
+        file_model = FileModel(title='Title 1')
+        file_model._history_user = self.user
+        file_model.save()
+        file_model.title = 'Title 2'
+        file_model.save()
+        response = self.app.get(get_history_url(file_model))
+        self.assertIn(get_history_url(file_model, 0),
+                      response.unicode_normal_body)
+        self.assertIn("FileModel object", response.unicode_normal_body)
+        self.assertIn("Created", response.unicode_normal_body)
+        self.assertIn(self.user.username, response.unicode_normal_body)
+        self.assertIn("test_method_value", response.unicode_normal_body)
+        self.assertIn("Title 1", response.unicode_normal_body)
+        self.assertIn("Title 2", response.unicode_normal_body)
 
     def test_history_view_permission(self):
         self.login()
@@ -211,7 +227,7 @@ class AdminSiteTest(WebTest):
             "No way to know of request, history_user should be unset.",
         )
 
-    @override_settings(**overridden_settings)
+    @override_settings(**middleware_override_settings)
     def test_middleware_saves_user(self):
         self.login()
         form = self.app.get(reverse('admin:tests_book_add')).form
@@ -224,13 +240,13 @@ class AdminSiteTest(WebTest):
                          "Middleware should make the request available to "
                          "retrieve history_user.")
 
-    @override_settings(**overridden_settings)
+    @override_settings(**middleware_override_settings)
     def test_middleware_unsets_request(self):
         self.login()
         self.app.get(reverse('admin:tests_book_add'))
         self.assertFalse(hasattr(HistoricalRecords.thread, 'request'))
 
-    @override_settings(**overridden_settings)
+    @override_settings(**middleware_override_settings)
     def test_rolled_back_user_does_not_lead_to_foreign_key_error(self):
         # This test simulates the rollback of a user after a request (which
         # happens, e.g. in test cases), and verifies that subsequently
@@ -250,7 +266,7 @@ class AdminSiteTest(WebTest):
             "No way to know of request, history_user should be unset.",
         )
 
-    @override_settings(**overridden_settings)
+    @override_settings(**middleware_override_settings)
     def test_middleware_anonymous_user(self):
         self.app.get(reverse('admin:index'))
         poll = Poll.objects.create(question="why?", pub_date=today)
@@ -272,7 +288,7 @@ class AdminSiteTest(WebTest):
         change_url = get_history_url(state, 0, site="other_admin")
         self.app.get(change_url)
 
-    def test_deleteting_user(self):
+    def test_deleting_user(self):
         """Test deletes of a user does not cascade delete the history"""
         self.login()
         poll = Poll(question="why?", pub_date=today)
@@ -285,6 +301,21 @@ class AdminSiteTest(WebTest):
         self.user.delete()
 
         historical_poll = poll.history.all()[0]
+        self.assertEqual(historical_poll.history_user, None)
+
+    def test_deleteting_member(self):
+        """Test deletes of a BucketMember doesn't cascade delete the history"""
+        self.login()
+        member = BucketMember.objects.create(name="member1", user=self.user)
+        bucket_data = BucketData(changed_by=member)
+        bucket_data.save()
+
+        historical_poll = bucket_data.history.all()[0]
+        self.assertEqual(historical_poll.history_user, member)
+
+        member.delete()
+
+        historical_poll = bucket_data.history.all()[0]
         self.assertEqual(historical_poll.history_user, None)
 
     def test_missing_one_to_one(self):

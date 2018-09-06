@@ -12,7 +12,11 @@ from django.db import models
 from django.db.models.fields.proxy import OrderWrt
 from django.test import TestCase
 
-from simple_history.models import HistoricalRecords, convert_auto_field
+from simple_history.models import (
+    HistoricalRecords,
+    convert_auto_field,
+    ModelChange
+)
 from simple_history.utils import update_change_reason
 from ..external.models import ExternalModel2, ExternalModel4
 from ..models import (
@@ -20,6 +24,9 @@ from ..models import (
     AdminProfile,
     Book,
     Bookcase,
+    BucketData,
+    BucketDataRegisterChangedBy,
+    BucketMember,
     Choice,
     City,
     ConcreteAttr,
@@ -40,9 +47,11 @@ from ..models import (
     Library,
     MultiOneToOne,
     Person,
+    Place,
     Poll,
     PollInfo,
     PollWithExcludeFields,
+    PollWithExcludedFKField,
     Province,
     Restaurant,
     SelfFK,
@@ -53,7 +62,10 @@ from ..models import (
     UnicodeVerboseName,
     UUIDModel,
     UUIDDefaultModel,
-    WaterLevel
+    WaterLevel,
+    DefaultTextFieldChangeReasonModel,
+    UserTextFieldChangeReasonModel,
+    CharFieldChangeReasonModel,
 )
 
 get_model = apps.get_model
@@ -370,6 +382,34 @@ class HistoricalRecordsTest(TestCase):
         self.assertIn('question', all_fields_names)
         self.assertNotIn('pub_date', all_fields_names)
 
+    def test_user_model_override(self):
+        user1 = User.objects.create_user('user1', '1@example.com')
+        user2 = User.objects.create_user('user2', '1@example.com')
+        member1 = BucketMember.objects.create(name="member1", user=user1)
+        member2 = BucketMember.objects.create(name="member2", user=user2)
+        bucket_data = BucketData.objects.create(changed_by=member1)
+        bucket_data.changed_by = member2
+        bucket_data.save()
+        bucket_data.changed_by = None
+        bucket_data.save()
+        self.assertEqual([d.history_user for d in bucket_data.history.all()],
+                         [None, member2, member1])
+
+    def test_user_model_override_registered(self):
+        user1 = User.objects.create_user('user1', '1@example.com')
+        user2 = User.objects.create_user('user2', '1@example.com')
+        member1 = BucketMember.objects.create(name="member1", user=user1)
+        member2 = BucketMember.objects.create(name="member2", user=user2)
+        bucket_data = BucketDataRegisterChangedBy.objects.create(
+            changed_by=member1
+        )
+        bucket_data.changed_by = member2
+        bucket_data.save()
+        bucket_data.changed_by = None
+        bucket_data.save()
+        self.assertEqual([d.history_user for d in bucket_data.history.all()],
+                         [None, member2, member1])
+
     def test_uuid_history_id(self):
         entry = UUIDModel.objects.create()
 
@@ -381,6 +421,63 @@ class HistoricalRecordsTest(TestCase):
 
         history = entry.history.all()[0]
         self.assertTrue(isinstance(history.history_id, uuid.UUID))
+
+    def test_default_history_change_reason(self):
+        entry = CharFieldChangeReasonModel.objects.create(
+            greeting="what's up?"
+        )
+        history = entry.history.get()
+
+        self.assertEqual(history.history_change_reason, None)
+
+    def test_charfield_history_change_reason(self):
+        # Default CharField and length
+        entry = CharFieldChangeReasonModel.objects.create(
+            greeting="what's up?"
+        )
+        entry.greeting = "what is happening?"
+        entry.save()
+        update_change_reason(entry, 'Change greeting.')
+
+        history = entry.history.all()[0]
+        field = history._meta.get_field('history_change_reason')
+
+        self.assertTrue(isinstance(field, models.CharField))
+        self.assertTrue(field.max_length, 100)
+
+    def test_default_textfield_history_change_reason(self):
+        # TextField usage is determined by settings
+        entry = DefaultTextFieldChangeReasonModel.objects.create(
+            greeting="what's up?"
+        )
+        entry.greeting = "what is happening?"
+        entry.save()
+
+        reason = 'Change greeting'
+        update_change_reason(entry, reason)
+
+        history = entry.history.all()[0]
+        field = history._meta.get_field('history_change_reason')
+
+        self.assertTrue(isinstance(field, models.TextField))
+        self.assertEqual(history.history_change_reason, reason)
+
+    def test_user_textfield_history_change_reason(self):
+        # TextField instance is passed in init
+        entry = UserTextFieldChangeReasonModel.objects.create(
+            greeting="what's up?"
+        )
+        entry.greeting = "what is happening?"
+        entry.save()
+
+        reason = 'Change greeting'
+        update_change_reason(entry, reason)
+
+        history = entry.history.all()[0]
+        field = history._meta.get_field('history_change_reason')
+
+        self.assertTrue(isinstance(field, models.TextField))
+        self.assertEqual(history.history_change_reason, reason)
 
     def test_get_prev_record(self):
         poll = Poll(question="what's up?", pub_date=today)
@@ -455,6 +552,36 @@ class HistoricalRecordsTest(TestCase):
         poll.save()
         recent_record = poll.history.filter(question="ask questions?").get()
         self.assertIsNone(recent_record.next_record)
+
+    def test_history_diff_includes_changed_fields(self):
+        p = Poll.objects.create(question="what's up?", pub_date=today)
+        p.question = "what's up, man?"
+        p.save()
+        new_record, old_record = p.history.all()
+        delta = new_record.diff_against(old_record)
+        expected_change = ModelChange("question",
+                                      "what's up?",
+                                      "what's up, man")
+        self.assertEqual(delta.changed_fields, ['question'])
+        self.assertEqual(delta.old_record, old_record)
+        self.assertEqual(delta.new_record, new_record)
+        self.assertEqual(expected_change.field, delta.changes[0].field)
+
+    def test_history_diff_does_not_include_unchanged_fields(self):
+        p = Poll.objects.create(question="what's up?", pub_date=today)
+        p.question = "what's up, man?"
+        p.save()
+        new_record, old_record = p.history.all()
+        delta = new_record.diff_against(old_record)
+        self.assertNotIn('pub_date', delta.changed_fields)
+
+    def test_history_diff_with_incorrect_type(self):
+        p = Poll.objects.create(question="what's up?", pub_date=today)
+        p.question = "what's up, man?"
+        p.save()
+        new_record, old_record = p.history.all()
+        with self.assertRaises(TypeError):
+            new_record.diff_against('something')
 
 
 class CreateHistoryModelTests(unittest.TestCase):
@@ -886,3 +1013,51 @@ class CustomTableNameTest1(TestCase):
             self.get_table_name(ContactRegister.history),
             'contacts_register_history',
         )
+
+
+class ExcludeFieldsTest(TestCase):
+    def test_restore_pollwithexclude(self):
+        poll = PollWithExcludeFields.objects.create(question="what's up?",
+                                                    pub_date=today)
+        historical = poll.history.order_by('pk')[0]
+        with self.assertRaises(AttributeError):
+            historical.pub_date
+        original = historical.instance
+        self.assertEqual(original.pub_date, poll.pub_date)
+
+
+class ExcludeForeignKeyTest(TestCase):
+    def setUp(self):
+        self.poll = PollWithExcludedFKField.objects.create(
+            question="Is it?", pub_date=today,
+            place=Place.objects.create(name="Somewhere")
+        )
+
+    def get_first_historical(self):
+        """
+        Retrieve the idx'th HistoricalPoll, ordered by time.
+        """
+        return self.poll.history.order_by('history_date')[0]
+
+    def test_instance_fk_value(self):
+        historical = self.get_first_historical()
+        original = historical.instance
+        self.assertEqual(original.place, self.poll.place)
+
+    def test_history_lacks_fk(self):
+        historical = self.get_first_historical()
+        with self.assertRaises(AttributeError):
+            historical.place
+
+    def test_nb_queries(self):
+        with self.assertNumQueries(2):
+            historical = self.get_first_historical()
+            historical.instance
+
+    def test_changed_value_lost(self):
+        new_place = Place.objects.create(name="More precise")
+        self.poll.place = new_place
+        self.poll.save()
+        historical = self.get_first_historical()
+        instance = historical.instance
+        self.assertEqual(instance.place, new_place)

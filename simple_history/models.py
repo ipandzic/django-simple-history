@@ -20,10 +20,21 @@ from django.utils.translation import ugettext_lazy as _
 
 from . import exceptions
 from .manager import HistoryDescriptor
+from .signals import (
+    pre_create_historical_record,
+    post_create_historical_record,
+)
 
 import simple_history
 
 registered_models = {}
+
+
+def default_get_user(request, **kwargs):
+    try:
+        return request.user
+    except AttributeError:
+        return None
 
 
 class HistoricalRecords(object):
@@ -31,13 +42,18 @@ class HistoricalRecords(object):
 
     def __init__(self, verbose_name=None, bases=(models.Model,),
                  user_related_name='+', table_name=None, inherit=False,
-                 history_id_field=None,
-                 excluded_fields=None, manual_trigger=False, follow=None):
+                 excluded_fields=None, history_id_field=None,
+                 history_change_reason_field=None,
+                 user_model=None, get_user=default_get_user,
+                 manual_trigger=False, follow=None):
         self.user_set_verbose_name = verbose_name
         self.user_related_name = user_related_name
         self.table_name = table_name
         self.inherit = inherit
         self.history_id_field = history_id_field
+        self.history_change_reason_field = history_change_reason_field
+        self.user_model = user_model
+        self.get_user = get_user
         if excluded_fields is None:
             excluded_fields = []
         self.excluded_fields = excluded_fields
@@ -48,7 +64,7 @@ class HistoricalRecords(object):
         try:
             if isinstance(bases, six.string_types):
                 raise TypeError
-            self.bases = tuple(bases)
+            self.bases = (HistoricalChanges,) + tuple(bases)
         except TypeError:
             raise TypeError("The `bases` option must be a list or a tuple.")
 
@@ -78,15 +94,11 @@ class HistoricalRecords(object):
 
     def finalize(self, sender, **kwargs):
         inherited = False
-        try:
-            hint_class = self.cls
-        except AttributeError:  # called via `register`
-            pass
-        else:
-            if hint_class is not sender:  # set in concrete
-                inherited = (self.inherit and issubclass(sender, hint_class))
-                if not inherited:
-                    return  # set in abstract
+        if self.cls is not sender:  # set in concrete
+            inherited = (self.inherit and issubclass(sender, self.cls))
+            if not inherited:
+                return  # set in abstract
+
         if hasattr(sender._meta, 'simple_history_manager_attribute'):
             raise exceptions.MultipleRegistrationsError(
                 '{}.{} registered multiple times for history tracking.'.format(
@@ -125,7 +137,10 @@ class HistoricalRecords(object):
         """
         Creates a historical model to associate with the model provided.
         """
-        attrs = {'__module__': self.module}
+        attrs = {
+            '__module__': self.module,
+            '_history_excluded_fields': self.excluded_fields
+        }
 
         app_module = '%s.models' % model._meta.app_label
 
@@ -216,7 +231,9 @@ class HistoricalRecords(object):
     def get_extra_fields(self, model, fields):
         """Return dict of extra fields added to the historical record model"""
 
-        user_model = getattr(settings, 'AUTH_USER_MODEL', 'auth.User')
+        user_model = self.user_model or getattr(
+            settings, 'AUTH_USER_MODEL', 'auth.User'
+        )
 
         def revert_url(self):
             """URL for this change in the default admin site."""
@@ -232,10 +249,20 @@ class HistoricalRecords(object):
             )
 
         def get_instance(self):
-            return model(**{
+            attrs = {
                 field.attname: getattr(self, field.attname)
                 for field in fields.values()
-            })
+            }
+            if self._history_excluded_fields:
+                excluded_attnames = [
+                    model._meta.get_field(field).attname
+                    for field in self._history_excluded_fields
+                ]
+                values = model.objects.filter(
+                    pk=getattr(self, model._meta.pk.attname)
+                ).values(*excluded_attnames).get()
+                attrs.update(values)
+            return model(**attrs)
 
         def get_next_record(self):
             """
@@ -264,11 +291,25 @@ class HistoricalRecords(object):
         else:
             history_id_field = models.AutoField(primary_key=True)
 
+        if self.history_change_reason_field:
+            # User specific field from init
+            history_change_reason_field = self.history_change_reason_field
+        elif getattr(
+            settings, 'SIMPLE_HISTORY_HISTORY_CHANGE_REASON_USE_TEXT_FIELD',
+            False
+        ):
+            # Use text field with no max length, not enforced by DB anyways
+            history_change_reason_field = models.TextField(null=True)
+        else:
+            # Current default, with max length
+            history_change_reason_field = models.CharField(
+                max_length=100, null=True
+            )
+
         return {
             'history_id': history_id_field,
             'history_date': models.DateTimeField(),
-            'history_change_reason': models.CharField(max_length=100,
-                                                      null=True),
+            'history_change_reason': history_change_reason_field,
             'history_user': models.ForeignKey(
                 user_model, null=True, related_name=self.user_related_name,
                 on_delete=models.SET_NULL),
@@ -321,24 +362,42 @@ class HistoricalRecords(object):
         history_user = self.get_history_user(instance)
         history_change_reason = getattr(instance, 'changeReason', None)
         manager = getattr(instance, self.manager_name)
+
+        pre_create_historical_record.send(
+            sender=manager.model, instance=instance,
+            history_date=history_date, history_user=history_user,
+            history_change_reason=history_change_reason,
+        )
+
         attrs = {}
         for field in self.fields_included(instance):
             attrs[field.attname] = getattr(instance, field.attname)
-        manager.create(history_date=history_date, history_type=history_type,
-                       history_user=history_user,
-                       history_change_reason=history_change_reason, **attrs)
+        history_instance = manager.create(
+            history_date=history_date, history_type=history_type,
+            history_user=history_user,
+            history_change_reason=history_change_reason, **attrs
+        )
+
+        post_create_historical_record.send(
+            sender=manager.model, instance=instance,
+            history_instance=history_instance,
+            history_date=history_date, history_user=history_user,
+            history_change_reason=history_change_reason,
+        )
 
     def get_history_user(self, instance):
         """Get the modifying user from instance or middleware."""
         try:
             return instance._history_user
         except AttributeError:
+            request = None
             try:
                 if self.thread.request.user.is_authenticated:
-                    return self.thread.request.user
-                return None
+                    request = self.thread.request
             except AttributeError:
-                return None
+                pass
+
+        return self.get_user(instance=instance, request=request)
 
     def make_through_tables_of_followed_m2m_historical(self, cls, name):
         """
@@ -447,3 +506,44 @@ class HistoricalObjectDescriptor(object):
         values = (getattr(instance, f.attname)
                   for f in self.fields_included)
         return self.model(*values)
+
+
+class HistoricalChanges(object):
+    def diff_against(self, old_history):
+        if not isinstance(old_history, type(self)):
+            raise TypeError(("unsupported type(s) for diffing: "
+                             "'{}' and '{}'").format(
+                            type(self),
+                            type(old_history)))
+
+        changes = []
+        changed_fields = []
+        for field in self._meta.fields:
+            if hasattr(self.instance, field.name) and \
+               hasattr(old_history.instance, field.name):
+                old_value = getattr(old_history, field.name, '')
+                new_value = getattr(self, field.name)
+                if old_value != new_value:
+                    change = ModelChange(field.name, old_value, new_value)
+                    changes.append(change)
+                    changed_fields.append(field.name)
+
+        return ModelDelta(changes,
+                          changed_fields,
+                          old_history,
+                          self)
+
+
+class ModelChange(object):
+    def __init__(self, field_name, old_value, new_value):
+        self.field = field_name
+        self.old = old_value
+        self.new = new_value
+
+
+class ModelDelta(object):
+    def __init__(self, changes, changed_fields, old_record, new_record):
+        self.changes = changes
+        self.changed_fields = changed_fields
+        self.old_record = old_record
+        self.new_record = new_record

@@ -8,6 +8,7 @@ Authors
 =======
 
 - Aleksey Kladov
+- Ben Lawson
 - bradford281
 - Buddy Lindsey, Jr.
 - Brian Dixon
@@ -31,7 +32,10 @@ Authors
 - Jonathan Sanchez
 - Josh Fyne
 - Klaas van Schelven
+- Kris Neuharth
 - Maciej "RooTer" Urbański
+- Mark Davidoff
+- Leticia Portella
 - Martin Bachwerk
 - Marty Alchin
 - Mauricio de Abreu Antunes
@@ -57,6 +61,11 @@ Authors
 - Ray Logel
 - Nathan Villagaray-Carski
 - Mike Spainhower
+- Alexander Anikeev
+- Kyle Seever
+- Adnan Umer (@uadnan)
+- Jonathan Zvesper (@zvesp)
+- Matheus Cansian (@mscansian)
 
 Background
 ==========

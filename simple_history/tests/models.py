@@ -32,6 +32,14 @@ class PollWithExcludeFields(models.Model):
     history = HistoricalRecords(excluded_fields=['pub_date'])
 
 
+class PollWithExcludedFKField(models.Model):
+    question = models.CharField(max_length=200)
+    pub_date = models.DateTimeField('date published')
+    place = models.ForeignKey('Place', on_delete=models.CASCADE)
+
+    history = HistoricalRecords(excluded_fields=['place'])
+
+
 class Temperature(models.Model):
     location = models.CharField(max_length=200)
     temperature = models.IntegerField()
@@ -119,6 +127,7 @@ class Person(models.Model):
 
 
 class FileModel(models.Model):
+    title = models.CharField(max_length=100)
     file = models.FileField(upload_to='files')
     history = HistoricalRecords()
 
@@ -406,6 +415,71 @@ class InheritTracking4(TrackedAbstractBaseA):
     pass
 
 
+class BucketMember(models.Model):
+    name = models.CharField(max_length=30)
+    user = models.OneToOneField(
+        User,
+        related_name="bucket_member",
+        on_delete=models.CASCADE
+    )
+
+
+class BucketData(models.Model):
+    changed_by = models.ForeignKey(
+        BucketMember,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+    )
+    history = HistoricalRecords(user_model=BucketMember)
+
+    @property
+    def _history_user(self):
+        return self.changed_by
+
+
+def get_bucket_member_changed_by(instance, **kwargs):
+    try:
+        return instance.changed_by
+    except AttributeError:
+        return None
+
+
+class BucketDataRegisterChangedBy(models.Model):
+    changed_by = models.ForeignKey(
+        BucketMember,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+    )
+
+
+register(
+    BucketDataRegisterChangedBy,
+    user_model=BucketMember,
+    get_user=get_bucket_member_changed_by
+)
+
+
+def get_bucket_member_request_user(request, **kwargs):
+    try:
+        return request.user.bucket_member
+    except AttributeError:
+        return None
+
+
+class BucketDataRegisterRequestUser(models.Model):
+    data = models.CharField(max_length=30)
+
+    def get_absolute_url(self):
+        return reverse('bucket_data-detail', kwargs={'pk': self.pk})
+
+
+register(
+    BucketDataRegisterRequestUser,
+    user_model=BucketMember,
+    get_user=get_bucket_member_request_user
+)
+
+
 class UUIDModel(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     history = HistoricalRecords(
@@ -432,3 +506,28 @@ class UUIDDefaultModel(models.Model):
 
 # Clear the SIMPLE_HISTORY_HISTORY_ID_USE_UUID
 delattr(settings, 'SIMPLE_HISTORY_HISTORY_ID_USE_UUID')
+
+
+# Set the SIMPLE_HISTORY_HISTORY_CHANGE_REASON_FIELD
+setattr(settings, 'SIMPLE_HISTORY_HISTORY_CHANGE_REASON_USE_TEXT_FIELD', True)
+
+
+class DefaultTextFieldChangeReasonModel(models.Model):
+    greeting = models.CharField(max_length=100)
+    history = HistoricalRecords()
+
+
+# Clear the SIMPLE_HISTORY_HISTORY_CHANGE_REASON_FIELD
+delattr(settings, 'SIMPLE_HISTORY_HISTORY_CHANGE_REASON_USE_TEXT_FIELD')
+
+
+class UserTextFieldChangeReasonModel(models.Model):
+    greeting = models.CharField(max_length=100)
+    history = HistoricalRecords(
+        history_change_reason_field=models.TextField(null=True)
+    )
+
+
+class CharFieldChangeReasonModel(models.Model):
+    greeting = models.CharField(max_length=100)
+    history = HistoricalRecords()
