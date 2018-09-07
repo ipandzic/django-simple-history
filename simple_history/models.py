@@ -11,7 +11,6 @@ from django.contrib import admin
 from django.db import models, router
 from django.db.models import Q
 from django.db.models.fields.proxy import OrderWrt
-from django.forms.models import _get_foreign_key
 from django.urls import reverse
 from django.utils import six
 from django.utils.encoding import python_2_unicode_compatible, smart_text
@@ -446,9 +445,9 @@ class HistoricalRecords(object):
                 try:
                     # ManyRelatedManager
                     manager = attr.through._default_manager
-                    through_model = manager.model
-                    fk = _get_foreign_key(instance.__class__, through_model)
-                    follow_instances = manager.filter(**{fk.name: instance})
+                    follow_instances = manager.filter(
+                        **{attr.source_field_name: instance}
+                    )
                 except AttributeError:
                     manager = attr  # RelatedManger
                     follow_instances = manager.all()
