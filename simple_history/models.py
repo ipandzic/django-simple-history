@@ -12,11 +12,10 @@ from django.db import models, router
 from django.db.models import Q
 from django.db.models.fields.proxy import OrderWrt
 from django.urls import reverse
-from django.utils import six
-from django.utils.encoding import python_2_unicode_compatible, smart_text
+from django.utils.encoding import smart_str
 from django.utils.text import format_lazy
 from django.utils.timezone import now
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from . import exceptions
 from .manager import HistoryDescriptor
@@ -62,7 +61,7 @@ class HistoricalRecords(object):
         self.manual_trigger = manual_trigger
 
         try:
-            if isinstance(bases, six.string_types):
+            if isinstance(bases, str):
                 raise TypeError
             self.bases = (HistoricalChanges,) + tuple(bases)
         except TypeError:
@@ -165,8 +164,7 @@ class HistoricalRecords(object):
             attrs['Meta'].db_table = self.table_name
         name = 'Historical%s' % model._meta.object_name
         registered_models[model._meta.db_table] = model
-        return python_2_unicode_compatible(
-            type(str(name), self.bases, attrs))
+        return type(str(name), self.bases, attrs)
 
     def fields_included(self, model):
         fields = []
@@ -344,7 +342,7 @@ class HistoricalRecords(object):
             name = self.user_set_verbose_name
         else:
             name = format_lazy('historical {}',
-                               smart_text(model._meta.verbose_name))
+                               smart_str(model._meta.verbose_name))
         meta_fields['verbose_name'] = name
         return meta_fields
 
