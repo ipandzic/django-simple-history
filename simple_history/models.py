@@ -412,7 +412,7 @@ class HistoricalRecords(object):
             if not isinstance(field, models.ManyToManyField):
                 continue
 
-            model = field.rel.through
+            model = field.remote_field.through
             attrs = model.__dict__.values()
             historical = any([isinstance(a, HistoricalRecords) for a in attrs])
 
