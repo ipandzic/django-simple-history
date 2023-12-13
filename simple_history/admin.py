@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.utils.encoding import force_str
 from django.utils.html import mark_safe
 from django.utils.text import capfirst
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 
 USER_NATURAL_KEY = tuple(
     key.lower() for key in settings.AUTH_USER_MODEL.split('.', 1))
