@@ -2,7 +2,7 @@ from __future__ import unicode_literals
 
 from django import http
 from django.conf import settings
-from django.conf.urls import url
+from django.urls import re_path
 from django.contrib import admin
 from django.contrib.admin import helpers
 from django.contrib.admin.utils import unquote
@@ -32,7 +32,7 @@ class SimpleHistoryAdmin(admin.ModelAdmin):
         opts = self.model._meta
         info = opts.app_label, opts.model_name
         history_urls = [
-            url("^([^/]+)/history/([^/]+)/$",
+            re_path("^([^/]+)/history/([^/]+)/$",
                 admin_site.admin_view(self.history_form_view),
                 name='%s_%s_simple_history' % info),
         ]
