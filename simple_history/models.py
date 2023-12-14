@@ -473,6 +473,7 @@ def transform_field(field):
     # Historical instance shouldn't change create/update timestamps
     field.auto_now = False
     field.auto_now_add = False
+    field.db_collation = None
 
     if field.primary_key or field.unique:
         # Unique fields can no longer be guaranteed unique,
