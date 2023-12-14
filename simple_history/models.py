@@ -473,6 +473,7 @@ def transform_field(field):
     # Historical instance shouldn't change create/update timestamps
     field.auto_now = False
     field.auto_now_add = False
+    # @see https://github.com/jazzband/django-simple-history/commit/f5ffdd55aa21b053100aa7ec9d690d32be9733a8
     field.db_collation = None
 
     if field.primary_key or field.unique:
